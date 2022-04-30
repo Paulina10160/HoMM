@@ -2,21 +2,41 @@
 #define SDL_MAIN_HANDLED
 #include "SDL.h"
 #include "SDL_image.h"
+#include <stdbool.h>
 
 // Structure that contains data about the object texture, position, speed and its size
 struct ObjectData {
-	SDL_Texture *texture;
-	int positionX;
-	int positionY;
+	SDL_Texture* texture;
+	float positionX;
+	float positionY;
 	int width;
 	int height;
-	int speed; // speed is the amount of pixels that the object will travel in a single frame
+	float speed;
+	int currentCellX;
+	int currentCellY;
 };
 typedef struct ObjectData ObjectData; // Creating shortcut for the struct that is declared above
 
+#define CELLS_X 15
+#define CELLS_Y 11
+
+struct Board
+{
+	SDL_Texture* defaultCellTexture;
+	SDL_Texture* obstacleCellTexture;
+	unsigned char cells[CELLS_Y][CELLS_X];
+	unsigned char cellsOld[CELLS_Y][CELLS_X];
+};
+typedef struct Board Board;
+
+#define CELL_SIZE 50
+
 // Global variables that contains window size 
-int WINDOW_WIDTH = 1920;
-int WINDOW_HEIGHT = 1080;
+int WINDOW_WIDTH = 15 * CELL_SIZE;
+int WINDOW_HEIGHT = 11 * CELL_SIZE;
+
+void initCells(Board* board);
+void findNextCellDestiny(ObjectData* car, unsigned char cells[CELLS_Y][CELLS_X], int* cellTargetX, int* cellTargetY, int* carDestinyX, int* carDestinyY);
 
 int main()
 {
@@ -47,10 +67,10 @@ int main()
 		return -1;
 
 	// Setting the window to fullscreen 
-	if (SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN) < 0) {
-		printf("Could not set up the fullscreen\n");
-		return -1;
-	}
+	//if (SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN) < 0) {
+	//	printf("Could not set up the fullscreen\n");
+	//	return -1;
+	//}
 
 	// Creating a renderer which will draw things on the screen
 	SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
@@ -60,47 +80,97 @@ int main()
 	// Setting the color of an empty window (RGBA). You are free to adjust it.
 	SDL_SetRenderDrawColor(renderer, 20, 150, 39, 255);
 
-	// Loading an image
-	char image_path[] = "image.png";
+	// Creating the game object (car)
+	ObjectData car;
 	// Here the surface is the information about the image. It contains the color data, width, height and other info.
-	SDL_Surface* surface = IMG_Load(image_path);
+	SDL_Surface* surface = IMG_Load("image.png");
 	if (!surface)
 	{
-		printf("Unable to load an image %s. Error: %s", image_path, IMG_GetError());
+		printf("Unable to load an image %s. Error: %s", "image.png", IMG_GetError());
 		return -1;
 	}
 
 	// Now we use the renderer and the surface to create a texture which we later can draw on the screen.
-	SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, surface);
-	if (!texture)
+	SDL_Texture* carTexture = SDL_CreateTextureFromSurface(renderer, surface);
+	if (!carTexture)
 	{
 		printf("Unable to create a texture. Error: %s", SDL_GetError());
 		return -1;
 	}
 
-	// Creating the game object (car)
-	ObjectData car;
-	car.texture = texture;
-	car.positionX = WINDOW_WIDTH / 2;
-	car.positionY = WINDOW_HEIGHT / 2;
-	car.width = surface->w;
-	car.height = surface->h;
-	car.speed = 1;
+	// Bye-bye the surface
+	SDL_FreeSurface(surface);
+	car.texture = carTexture;
+	car.positionX = 25.f;
+	car.positionY = 25.f;
+	car.width = CELL_SIZE;
+	car.height = CELL_SIZE;
+	car.speed = 200.f;
+	car.currentCellX = 0;
+	car.currentCellY = 0;
 
-	// Creating the destiny position for the car image (once the mouse button is clicked those variables will change)
-	int carDestinyX = car.height;
-	int carDestinyY = car.width;
+	Board board;
+	initCells(&board);
+	surface = IMG_Load("cellDefault.png");
+	if (!surface)
+	{
+		printf("Unable to load an image %s. Error: %s", "cellDefault.png", IMG_GetError());
+		return -1;
+	}
 
+	// Now we use the renderer and the surface to create a texture which we later can draw on the screen.
+	SDL_Texture* defaultCellTexture = SDL_CreateTextureFromSurface(renderer, surface);
+	if (!defaultCellTexture)
+	{
+		printf("Unable to create a texture. Error: %s", SDL_GetError());
+		return -1;
+	}
+	board.defaultCellTexture = defaultCellTexture;
 	// Bye-bye the surface
 	SDL_FreeSurface(surface);
 
+	surface = IMG_Load("cellObstacle.png");
+	if (!surface)
+	{
+		printf("Unable to load an image %s. Error: %s", "cellObstacle.png", IMG_GetError());
+		return -1;
+	}
+
+	// Now we use the renderer and the surface to create a texture which we later can draw on the screen.
+	SDL_Texture* obstacleCellTexture = SDL_CreateTextureFromSurface(renderer, surface);
+	if (!obstacleCellTexture)
+	{
+		printf("Unable to create a texture. Error: %s", SDL_GetError());
+		return -1;
+	}
+	board.obstacleCellTexture = obstacleCellTexture;
+	// Bye-bye the surface
+	SDL_FreeSurface(surface);
+
+	// Creating the destiny position for the car image (once the mouse button is clicked those variables will change)
+	int carDestinyX = 25;
+	int carDestinyY = 25;
+	int destinyReachedAcceptanceDist = 2;
+	int cellDestinyX = 0;
+	int cellDestinyY = 0;
+	int cellTempDestinyX = 0;
+	int cellTempDestinyY = 0;
+	bool canMoveToValidCell = false;
+
 	int done = 0;
 	SDL_Event sdl_event;
+
+	float deltaTime = 0.f;
+	float lastTick = 0.f;
 
 	// The main loop
 	// Every iteration is a frame
 	while (!done)
 	{
+		float currentTick = (float)SDL_GetTicks() / 1000.f;
+		deltaTime = currentTick - lastTick;
+		lastTick = currentTick;
+
 		// Polling the messages from the OS.
 		// That could be key downs, mouse movement, ALT+F4 or many others
 		while (SDL_PollEvent(&sdl_event))
@@ -118,10 +188,10 @@ int main()
 					event.type = SDL_QUIT;
 					event.quit.type = SDL_QUIT;
 					event.quit.timestamp = SDL_GetTicks();
-					SDL_PushEvent(&event); 
+					SDL_PushEvent(&event);
 				}
-				break;
-				// Other keys here
+								break;
+								// Other keys here
 				default:
 					break;
 				}
@@ -130,9 +200,85 @@ int main()
 				switch (sdl_event.button.button) { // Check the type of button clicked
 				case SDL_BUTTON_LEFT: { // Left mouse button
 					// Get the current position of the mouse and update the destiny position for the car
-					SDL_GetMouseState(&carDestinyX, &carDestinyY);
+					int mousePosX = 0;
+					int mousePosY = 0;
+					SDL_GetMouseState(&mousePosX, &mousePosY);
+					cellDestinyX = mousePosX / CELL_SIZE;
+					cellDestinyY = mousePosY / CELL_SIZE;
+
+					initCells(&board);
+
+					// Grassfire algorithm
+					if (board.cells[cellDestinyY][cellDestinyX] != 255)
+					{
+						canMoveToValidCell = true;
+						board.cells[cellDestinyY][cellDestinyX] = 1;
+						bool S = true;
+						while (S)
+						{
+							S = false;
+							memcpy(board.cellsOld, board.cells, sizeof(board.cells));
+							for (int i = 0; i < CELLS_Y; ++i)
+							{
+								for (int j = 0; j < CELLS_X; ++j)
+								{
+									int A = board.cellsOld[i][j];
+									if (A != 0 && A != 255)
+									{
+										int B = A + 1;
+										// Adjacent top
+										if (i > 0)
+										{
+											int x = board.cellsOld[i - 1][j];
+											if (x == 0)
+											{
+												board.cells[i - 1][j] = B;
+												S = true;
+											}
+										}
+										// Adjacent right
+										if (j < CELLS_X - 1)
+										{
+											int x = board.cellsOld[i][j + 1];
+											if (x == 0)
+											{
+												board.cells[i][j + 1] = B;
+												S = true;
+											}
+										}
+										// Adjacent bottom
+										if (i < CELLS_Y - 1)
+										{
+											int x = board.cellsOld[i + 1][j];
+											if (x == 0)
+											{
+												board.cells[i + 1][j] = B;
+												S = true;
+											}
+										}
+										// Adjacent left
+										if (j > 0)
+										{
+											int x = board.cellsOld[i][j - 1];
+											if (x == 0)
+											{
+												board.cells[i][j - 1] = B;
+												S = true;
+											}
+										}
+									}
+								}
+							}
+						}
+
+						findNextCellDestiny(&car, board.cells, &cellTempDestinyX, &cellTempDestinyY, &carDestinyX, &carDestinyY);
+					}
+					else
+					{
+						canMoveToValidCell = false;
+					}
 				}
-				break;
+									break;
 				default: // any other button
 					break;
 				}
@@ -151,6 +297,28 @@ int main()
 		rect.w = (int)car.width;
 		rect.h = (int)car.height;
 
+		// Draw the board
+		for (int i = 0; i < CELLS_Y; ++i)
+		{
+			for (int j = 0; j < CELLS_X; ++j)
+			{
+				SDL_Rect cellRect;
+				cellRect.x = j * CELL_SIZE;
+				cellRect.y = i * CELL_SIZE;
+				cellRect.w = CELL_SIZE;
+				cellRect.h = CELL_SIZE;
+
+				SDL_Texture* cellTexture = board.cells[i][j] == 255 ? board.obstacleCellTexture : board.defaultCellTexture;
+				SDL_RenderCopyEx(renderer, // Already know what is that
+					cellTexture, // The image
+					0, // A rectangle to crop from the original image. Since we need the whole image that can be left empty (nullptr [0])
+					&cellRect, // The destination rectangle on the screen.
+					0, // An angle in degrees for rotation
+					0, // The center of the rotation (when nullptr [0], the rect center is taken)
+					SDL_FLIP_NONE); // We don't want to flip the image
+			}
+		}
+
 		SDL_RenderCopyEx(renderer, // Already know what is that
 			car.texture, // The image
 			0, // A rectangle to crop from the original image. Since we need the whole image that can be left empty (nullptr [0])
@@ -163,24 +331,35 @@ int main()
 		SDL_RenderPresent(renderer);
 
 		// Prepare the next frame. In our case we need to move the current car position to get closer to the destiny car position
-		// Check whether the X current and destiny position differes (it can only be moved if the difference between destiny and current X position is bigger or equal to car.speed
-		// otherwise we would notice weird movement for the car - to see that weird movement replace the car.speed with 0 in the if statement)
-		if (abs(car.positionX - carDestinyX) >= car.speed) { // abs() returns the absolute value
-			// if different then move the car to get closer to its destiny postion
-			if (car.positionX > carDestinyX) {
-				car.positionX -= car.speed;
+		if (canMoveToValidCell)
+		{
+			bool reachedTempDestiny = true;
+			// Check whether the X current and destiny position differes
+			if (abs(car.positionX - carDestinyX) >= destinyReachedAcceptanceDist) {
+				// if different then move the car to get closer to its destiny postion
+				if (car.positionX > carDestinyX) {
+					car.positionX -= car.speed * deltaTime;
+				}
+				else {
+					car.positionX += car.speed * deltaTime;
+				}
+				reachedTempDestiny = false;
 			}
-			else {
-				car.positionX += car.speed;
+			// Check whether the Y current and destiny position differes
+			if (abs(car.positionY - carDestinyY) >= destinyReachedAcceptanceDist) {
+				if (car.positionY > carDestinyY) {
+					car.positionY -= car.speed * deltaTime;
+				}
+				else {
+					car.positionY += car.speed * deltaTime;
+				}
+				reachedTempDestiny = false;
 			}
-		}
-		// Check whether the Y current and destiny position differes
-		if (abs(car.positionY - carDestinyY) >= car.speed) {
-			if (car.positionY > carDestinyY) {
-				car.positionY -= car.speed;
-			}
-			else {
-				car.positionY += car.speed;
+
+			// If reached the current destiny, find the next one until the final destiny is reached
+			if (reachedTempDestiny && (cellTempDestinyX != cellDestinyX || cellTempDestinyY != cellDestinyY))
+			{
+				findNextCellDestiny(&car, board.cells, &cellTempDestinyX, &cellTempDestinyY, &carDestinyX, &carDestinyY);
 			}
 		}
 	}
@@ -201,4 +380,82 @@ int main()
 
 	// Done.
 	return 0;
+}
+
+void initCells(Board* board)
+{
+	// Set all values to 0
+	memset(board->cells, 0, sizeof(board->cells));
+	// Set the obstacle data
+	board->cells[3][5] = 255;
+	board->cells[4][5] = 255;
+	board->cells[5][5] = 255;
+	board->cells[6][5] = 255;
+	board->cells[6][6] = 255;
+	board->cells[6][7] = 255;
+
+	board->cells[2][11] = 255;
+	board->cells[2][12] = 255;
+	board->cells[2][13] = 255;
+	board->cells[3][13] = 255;
+	board->cells[4][13] = 255;
+	board->cells[4][12] = 255;
+	board->cells[4][11] = 255;
+	board->cells[3][11] = 255;
+}
+
+void findNextCellDestiny(ObjectData* car, unsigned char cells[CELLS_Y][CELLS_X], int* cellTempDestinyX, int* cellTempDestinyY, int* carDestinyX, int* carDestinyY)
+{
+	car->currentCellX = *cellTempDestinyX;
+	car->currentCellY = *cellTempDestinyY;
+
+	unsigned char minValue = 255;
+	// Adjacent left
+	if (car->currentCellX > 0)
+	{
+		unsigned char x = cells[car->currentCellY][car->currentCellX - 1];
+		// 0 means that the destiny can't be reached
+		if (x < minValue && x != 0)
+		{
+			minValue = x;
+			*cellTempDestinyX = car->currentCellX - 1;
+			*cellTempDestinyY = car->currentCellY;
+		}
+	}
+	// Adjacent top
+	if (car->currentCellY > 0)
+	{
+		unsigned char x = cells[car->currentCellY - 1][car->currentCellX];
+		if (x < minValue && x != 0)
+		{
+			minValue = x;
+			*cellTempDestinyX = car->currentCellX;
+			*cellTempDestinyY = car->currentCellY - 1;
+		}
+	}
+	// Adjacent right
+	if (car->currentCellX < CELLS_X - 1)
+	{
+		unsigned char x = cells[car->currentCellY][car->currentCellX + 1];
+		if (x < minValue && x != 0)
+		{
+			minValue = x;
+			*cellTempDestinyX = car->currentCellX + 1;
+			*cellTempDestinyY = car->currentCellY;
+		}
+	}
+	// Adjacent bottom
+	if (car->currentCellY < CELLS_Y - 1)
+	{
+		unsigned char x = cells[car->currentCellY + 1][car->currentCellX];
+		if (x < minValue && x != 0)
+		{
+			minValue = x;
+			*cellTempDestinyX = car->currentCellX;
+			*cellTempDestinyY = car->currentCellY + 1;
+		}
+	}
+
+	*carDestinyX = (*cellTempDestinyX * CELL_SIZE) + (CELL_SIZE / 2);
+	*carDestinyY = (*cellTempDestinyY * CELL_SIZE) + (CELL_SIZE / 2);
 }
